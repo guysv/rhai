@@ -232,8 +232,8 @@ pub use eval::EvalContext;
 use func::calc_typed_method_hash;
 use func::{calc_fn_hash, calc_fn_hash_full, calc_var_hash};
 pub use func::{
-    plugin, BorrowCallContext, BorrowedFuncArgs, BorrowedOpaquePointer, BorrowedScopeEntry,
-    BorrowedScopeValue, FuncArgs, NativeCallContext, RhaiNativeFunc,
+    plugin, BorrowCallContext, BorrowToken, BorrowedFuncArgs, BorrowedScopeEntry, FuncArgs,
+    NativeCallContext, RhaiNativeFunc,
 };
 pub use module::{FnNamespace, FuncRegistration, Module};
 pub use packages::string_basic::{FUNC_TO_DEBUG, FUNC_TO_STRING};

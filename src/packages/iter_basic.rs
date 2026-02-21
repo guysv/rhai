@@ -40,7 +40,7 @@ where
 }
 
 // Range iterator with step
-#[derive(Clone, Hash, Eq, PartialEq)]
+#[derive(Clone, Hash)]
 pub struct StepRange<T> {
     /// Start of the range.
     pub from: T,
@@ -54,6 +54,19 @@ pub struct StepRange<T> {
     /// > 0 = forward, < 0 = backward, 0 = done.
     pub dir: i8,
 }
+
+impl<T: PartialEq> PartialEq for StepRange<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.from == other.from
+            && self.to == other.to
+            && self.step == other.step
+            && std::ptr::fn_addr_eq(self.add, other.add)
+            && self.dir == other.dir
+    }
+}
+
+impl<T: Eq> Eq for StepRange<T> {}
 
 impl<T: Debug> Debug for StepRange<T> {
     #[cold]

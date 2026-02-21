@@ -2,11 +2,10 @@
 #![cfg(not(feature = "no_function"))]
 
 use super::call::FnCallArgs;
+use super::func_args::BorrowedScopeValue;
 use crate::ast::{EncapsulatedEnviron, ScriptFuncDef};
 use crate::eval::{Caches, GlobalRuntimeState};
-use crate::{
-    BorrowedScopeEntry, BorrowedScopeValue, Dynamic, Engine, Position, RhaiResult, Scope, ERR,
-};
+use crate::{BorrowToken, BorrowedScopeEntry, Dynamic, Engine, Position, RhaiResult, Scope, ERR};
 #[cfg(feature = "no_std")]
 use std::prelude::v1::*;
 use std::mem;
@@ -68,12 +67,7 @@ impl Engine {
             .map_or(0, |dbg| dbg.call_stack().len());
 
         #[cfg(not(feature = "no_closure"))]
-        let borrowed_scope_count = borrowed_scope.as_ref().map_or(0, |bindings| {
-            bindings
-                .iter()
-                .filter(|binding| matches!(binding.value, BorrowedScopeValue::Dynamic(..)))
-                .count()
-        });
+        let borrowed_scope_count = borrowed_scope.as_ref().map_or(0, |bindings| bindings.len());
         #[cfg(feature = "no_closure")]
         let borrowed_scope_count = 0;
 
@@ -101,9 +95,8 @@ impl Engine {
         #[cfg(not(feature = "no_closure"))]
         if let Some(bindings) = borrowed_scope.as_deref_mut() {
             for binding in bindings.iter() {
-                if matches!(binding.value, BorrowedScopeValue::Dynamic(..))
-                    && (fn_def.params.iter().any(|param| param == &binding.name)
-                        || scope.contains(binding.name.as_str()))
+                if fn_def.params.iter().any(|param| param == &binding.name)
+                    || scope.contains(binding.name.as_str())
                 {
                     return Err(ERR::ErrorRuntime(
                         format!(
@@ -131,6 +124,8 @@ impl Engine {
                         borrowed_scope_values.push(value);
                     }
                     BorrowedScopeValue::Opaque(ptr) => {
+                        let token = Dynamic::from(BorrowToken::new(binding.name.clone()));
+                        scope.push_dynamic(binding.name.clone(), token);
                         borrowed_scope_map.insert(
                             binding.name.clone(),
                             crate::func::native::ActiveBorrowedValue::Opaque(ptr.ptr),
@@ -293,7 +288,7 @@ impl Engine {
         }
 
         #[cfg(not(feature = "no_closure"))]
-        let num_bound_values = args.len() + borrowed_scope_values.len();
+        let num_bound_values = args.len() + borrowed_scope_count;
         #[cfg(feature = "no_closure")]
         let num_bound_values = args.len();
 

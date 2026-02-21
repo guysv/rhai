@@ -18,9 +18,7 @@ pub use call::ensure_no_data_race;
 #[cfg(not(feature = "no_function"))]
 pub use call::is_anonymous_fn;
 pub use call::FnCallArgs;
-pub use func_args::{
-    BorrowedFuncArgs, BorrowedOpaquePointer, BorrowedScopeEntry, BorrowedScopeValue, FuncArgs,
-};
+pub use func_args::{BorrowToken, BorrowedFuncArgs, BorrowedScopeEntry, FuncArgs};
 #[cfg(not(feature = "no_function"))]
 pub use func_trait::Func;
 pub use function::RhaiFunc;

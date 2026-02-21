@@ -349,8 +349,8 @@ fn test_call_fn_with_borrowed_scope_bindings() {
             "update",
             (true,),
             [
-                ("host_counter", &mut host_counter),
-                ("host_text", &mut host_text),
+                BorrowedScopeEntry::dynamic("host_counter", &mut host_counter),
+                BorrowedScopeEntry::dynamic("host_text", &mut host_text),
             ],
         )
         .unwrap();
@@ -374,7 +374,7 @@ fn test_call_fn_with_borrowed_scope_bindings_optional_usage() {
             &ast,
             "maybe_use",
             (false,),
-            [("host_data", &mut host_data)],
+            [BorrowedScopeEntry::dynamic("host_data", &mut host_data)],
         )
         .unwrap();
 
@@ -397,7 +397,7 @@ fn test_call_fn_with_borrowed_scope_binding_conflict() {
             &ast,
             "foo",
             (),
-            [("existing", &mut host_value)],
+            [BorrowedScopeEntry::dynamic("existing", &mut host_value)],
         )
         .unwrap_err();
 
@@ -433,7 +433,7 @@ fn test_call_fn_with_borrowed_scope_binding_expired_access() {
             &ast,
             "capture",
             (),
-            [("borrowed", &mut host_value)],
+            [BorrowedScopeEntry::dynamic("borrowed", &mut host_value)],
         )
         .unwrap();
 
@@ -451,39 +451,20 @@ fn test_call_fn_with_borrowed_scope_bindings_with_registered_rust_fn() {
     let mut engine = Engine::new();
     let mut scope = Scope::new();
 
-    engine.register_borrow_fn("bump_state", [TypeId::of::<rhai::ImmutableString>()], |ctx, args| {
-        let name = args[0]
-            .clone()
-            .into_immutable_string()
-            .map_err(|typ| {
-                rhai::EvalAltResult::ErrorMismatchDataType("string".into(), typ.into(), rhai::Position::NONE)
-            })?;
-
-        ctx.with_borrowed_mut::<NonCloneState, _>(name.as_str(), |state| state.value += 1)?;
-        Ok(())
-    });
+    engine.register_borrow_fn(
+        "bump_state",
+        [TypeId::of::<Dynamic>()],
+        |ctx, args| {
+            ctx.with_borrowed_arg_mut::<NonCloneState, _>(args, 0, |state| state.value += 1)?;
+            Ok(())
+        },
+    );
     engine.register_borrow_fn(
         "scale_add_state",
-        [
-            TypeId::of::<rhai::ImmutableString>(),
-            TypeId::of::<INT>(),
-        ],
+        [TypeId::of::<Dynamic>(), TypeId::of::<INT>()],
         |ctx, args| {
-            let name = args[0]
-                .clone()
-                .into_immutable_string()
-                .map_err(|typ| {
-                    rhai::EvalAltResult::ErrorMismatchDataType(
-                        "string".into(),
-                        typ.into(),
-                        rhai::Position::NONE,
-                    )
-                })?;
-            let factor = args[1].as_int().map_err(|typ| {
-                rhai::EvalAltResult::ErrorMismatchDataType("int".into(), typ.into(), rhai::Position::NONE)
-            })?;
-
-            ctx.with_borrowed_mut::<NonCloneState, _>(name.as_str(), |state| {
+            let factor = ctx.arg_value::<INT>(args, 1)?;
+            ctx.with_borrowed_arg_mut::<NonCloneState, _>(args, 0, |state| {
                 state.value = state.value * factor + 1;
             })?;
             Ok(())
@@ -494,8 +475,8 @@ fn test_call_fn_with_borrowed_scope_bindings_with_registered_rust_fn() {
         .compile(
             r#"
                 fn run() {
-                    bump_state("host_state");
-                    scale_add_state("host_state", 2);
+                    bump_state(host_state);
+                    scale_add_state(host_state, 2);
                 }
             "#,
         )

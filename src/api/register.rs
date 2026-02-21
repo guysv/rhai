@@ -136,6 +136,14 @@ impl Engine {
     /// This API is intended for [`Engine::call_fn_with_borrowed_scope`][crate::Engine::call_fn_with_borrowed_scope]
     /// where borrowed bindings are provided by name and can be accessed inside `func` via
     /// [`BorrowCallContext::with_borrowed_mut`][crate::BorrowCallContext::with_borrowed_mut].
+    ///
+    /// # Ergonomic helpers
+    ///
+    /// Inside the callback, use [`BorrowCallContext`] helpers to avoid manual argument decoding:
+    ///
+    /// - [`arg_value`][crate::BorrowCallContext::arg_value] for typed value arguments
+    /// - [`with_borrowed_arg_mut`][crate::BorrowCallContext::with_borrowed_arg_mut] for
+    ///   first-argument binding-name patterns like `fn("host_state", ...)`
     #[inline(always)]
     pub fn register_borrow_fn<T: Variant + Clone>(
         &mut self,

@@ -7,8 +7,8 @@ use crate::plugin::PluginFunc;
 use crate::tokenizer::{is_valid_function_name, Token, TokenizeState};
 use crate::types::dynamic::Variant;
 use crate::{
-    calc_fn_hash, expose_under_internals, Dynamic, Engine, EvalContext, FnArgsVec, FuncArgs,
-    ImmutableString, Position, RhaiResult, RhaiResultOf, StaticVec, VarDefInfo, ERR,
+    calc_fn_hash, expose_under_internals, BorrowToken, Dynamic, Engine, EvalContext, FnArgsVec,
+    FuncArgs, ImmutableString, Position, RhaiResult, RhaiResultOf, StaticVec, VarDefInfo, ERR,
 };
 use std::any::Any;
 use std::any::type_name;
@@ -513,6 +513,41 @@ impl<'a> NativeCallContext<'a> {
 }
 
 impl BorrowCallContext<'_> {
+    fn borrowed_name_from_arg(
+        &self,
+        args: &mut FnCallArgs,
+        index: usize,
+    ) -> RhaiResultOf<ImmutableString> {
+        let Some(value) = args.get(index) else {
+            return Err(ERR::ErrorRuntime(
+                format!(
+                    "missing argument {index} for borrow function '{}'",
+                    self.fn_name()
+                )
+                .into(),
+                self.call_position(),
+            )
+            .into());
+        };
+
+        let value = (*(*value)).clone();
+
+        if let Ok(name) = value.clone().try_cast_result::<ImmutableString>() {
+            return Ok(name);
+        }
+
+        value.try_cast_result::<BorrowToken>().map_or_else(
+            |value| {
+                Err(ERR::ErrorMismatchDataType(
+                    "string | BorrowToken".into(),
+                    self.engine().map_type_name(value.type_name()).into(),
+                    self.call_position(),
+                )
+                .into())
+            },
+            |token| Ok(token.name().into()),
+        )
+    }
     /// The current [`Engine`].
     #[inline(always)]
     #[must_use]
@@ -530,6 +565,42 @@ impl BorrowCallContext<'_> {
     #[must_use]
     pub const fn call_position(&self) -> Position {
         self.0.call_position()
+    }
+    /// Read a function argument value by index with type checking.
+    pub fn arg_value<T: Variant + Clone>(&self, args: &mut FnCallArgs, index: usize) -> RhaiResultOf<T> {
+        let Some(value) = args.get(index) else {
+            return Err(ERR::ErrorRuntime(
+                format!(
+                    "missing argument {index} for borrow function '{}'",
+                    self.fn_name()
+                )
+                .into(),
+                self.call_position(),
+            )
+            .into());
+        };
+
+        (*(*value))
+            .clone()
+            .try_cast_result::<T>()
+            .map_err(|value| {
+                ERR::ErrorMismatchDataType(
+                    self.engine().map_type_name(type_name::<T>()).into(),
+                    self.engine().map_type_name(value.type_name()).into(),
+                    self.call_position(),
+                )
+                .into()
+            })
+    }
+    /// Borrow by binding name from a string argument and map it.
+    pub fn with_borrowed_arg_mut<T: Any, R>(
+        &self,
+        args: &mut FnCallArgs,
+        index: usize,
+        mapper: impl FnOnce(&mut T) -> R,
+    ) -> RhaiResultOf<R> {
+        let name = self.borrowed_name_from_arg(args, index)?;
+        self.with_borrowed_mut::<T, R>(name.as_str(), mapper)
     }
     /// Access a borrowed binding by name as a mutable Rust value.
     ///
