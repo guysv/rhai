@@ -28,6 +28,8 @@ New features
 ------------
 
 * `AST::new_from_module` is added to create an `AST` from a shared `Module`.
+* `Engine::call_fn_with_borrowed_scope` and `Engine::call_fn_with_options_and_borrowed_scope` are added to expose host-side borrowed `Dynamic` values as named locals during script function calls. Captured borrowed bindings expire after the call and return a run-time error when accessed later.
+* `Engine::register_borrow_fn` is added to register borrow-aware native callbacks that can access active borrowed bindings by name, including opaque non-`Clone` Rust values provided via `BorrowedScopeEntry::opaque`.
 
 
 Version 1.23.6

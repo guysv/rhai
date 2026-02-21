@@ -1,5 +1,8 @@
 #![cfg(not(feature = "no_function"))]
-use rhai::{CallFnOptions, Dynamic, Engine, EvalAltResult, FnPtr, Func, FuncArgs, Scope, AST, INT};
+use rhai::{
+    BorrowedScopeEntry, CallFnOptions, Dynamic, Engine, EvalAltResult, FnPtr, Func, FuncArgs,
+    Scope, AST, INT,
+};
 use std::any::TypeId;
 
 #[test]
@@ -316,4 +319,259 @@ fn test_call_fn_events() {
     let _ = handler.on_event("update", 999);
     assert!(handler.scope.get_value::<bool>("state").unwrap());
     assert_eq!(handler.on_event("start", 999).as_int().unwrap(), 1041);
+}
+
+#[test]
+fn test_call_fn_with_borrowed_scope_bindings() {
+    let engine = Engine::new();
+    let mut scope = Scope::new();
+
+    let ast = engine
+        .compile(
+            r#"
+                fn update(flag) {
+                    host_counter += 1;
+                    if flag {
+                        host_text += "!";
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+
+    let mut host_counter = Dynamic::from(41 as INT);
+    let mut host_text = Dynamic::from("abc");
+
+    engine
+        .call_fn_with_borrowed_scope::<()>(
+            &mut scope,
+            &ast,
+            "update",
+            (true,),
+            [
+                ("host_counter", &mut host_counter),
+                ("host_text", &mut host_text),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(host_counter.clone_cast::<INT>(), 42);
+    assert_eq!(host_text.clone_cast::<String>(), "abc!");
+}
+
+#[test]
+fn test_call_fn_with_borrowed_scope_bindings_optional_usage() {
+    let engine = Engine::new();
+    let mut scope = Scope::new();
+
+    let ast = engine.compile("fn maybe_use(flag) { if flag { host_data += 1; } }").unwrap();
+
+    let mut host_data = Dynamic::from(40 as INT);
+
+    engine
+        .call_fn_with_borrowed_scope::<()>(
+            &mut scope,
+            &ast,
+            "maybe_use",
+            (false,),
+            [("host_data", &mut host_data)],
+        )
+        .unwrap();
+
+    assert_eq!(host_data.clone_cast::<INT>(), 40);
+}
+
+#[test]
+fn test_call_fn_with_borrowed_scope_binding_conflict() {
+    let engine = Engine::new();
+    let mut scope = Scope::new();
+    scope.push("existing", 1 as INT);
+
+    let ast = engine.compile("fn foo() { let _x = 1; }").unwrap();
+
+    let mut host_value = Dynamic::from(42 as INT);
+
+    let err = engine
+        .call_fn_with_borrowed_scope::<()>(
+            &mut scope,
+            &ast,
+            "foo",
+            (),
+            [("existing", &mut host_value)],
+        )
+        .unwrap_err();
+
+    assert!(err.to_string().contains("conflicts with an existing variable"));
+}
+
+#[test]
+fn test_call_fn_with_borrowed_scope_binding_expired_access() {
+    let engine = Engine::new();
+    let mut scope = Scope::new();
+    scope.push("saved", Dynamic::UNIT);
+
+    let ast = engine
+        .compile(
+            r#"
+                fn capture() {
+                    saved = || borrowed + 1;
+                }
+
+                fn invoke() {
+                    saved.call()
+                }
+            "#,
+        )
+        .unwrap();
+
+    let mut host_value = Dynamic::from(41 as INT);
+
+    engine
+        .call_fn_with_options_and_borrowed_scope::<()>(
+            CallFnOptions::new().rewind_scope(false),
+            &mut scope,
+            &ast,
+            "capture",
+            (),
+            [("borrowed", &mut host_value)],
+        )
+        .unwrap();
+
+    let err = engine.call_fn::<Dynamic>(&mut scope, &ast, "invoke", ()).unwrap_err();
+
+    assert!(err.to_string().contains("no longer valid"));
+}
+
+#[test]
+fn test_call_fn_with_borrowed_scope_bindings_with_registered_rust_fn() {
+    struct NonCloneState {
+        value: INT,
+    }
+
+    let mut engine = Engine::new();
+    let mut scope = Scope::new();
+
+    engine.register_borrow_fn("bump_state", [TypeId::of::<rhai::ImmutableString>()], |ctx, args| {
+        let name = args[0]
+            .clone()
+            .into_immutable_string()
+            .map_err(|typ| {
+                rhai::EvalAltResult::ErrorMismatchDataType("string".into(), typ.into(), rhai::Position::NONE)
+            })?;
+
+        ctx.with_borrowed_mut::<NonCloneState, _>(name.as_str(), |state| state.value += 1)?;
+        Ok(())
+    });
+    engine.register_borrow_fn(
+        "scale_add_state",
+        [
+            TypeId::of::<rhai::ImmutableString>(),
+            TypeId::of::<INT>(),
+        ],
+        |ctx, args| {
+            let name = args[0]
+                .clone()
+                .into_immutable_string()
+                .map_err(|typ| {
+                    rhai::EvalAltResult::ErrorMismatchDataType(
+                        "string".into(),
+                        typ.into(),
+                        rhai::Position::NONE,
+                    )
+                })?;
+            let factor = args[1].as_int().map_err(|typ| {
+                rhai::EvalAltResult::ErrorMismatchDataType("int".into(), typ.into(), rhai::Position::NONE)
+            })?;
+
+            ctx.with_borrowed_mut::<NonCloneState, _>(name.as_str(), |state| {
+                state.value = state.value * factor + 1;
+            })?;
+            Ok(())
+        },
+    );
+
+    let ast = engine
+        .compile(
+            r#"
+                fn run() {
+                    bump_state("host_state");
+                    scale_add_state("host_state", 2);
+                }
+            "#,
+        )
+        .unwrap();
+
+    let mut host_state = NonCloneState { value: 20 };
+
+    engine
+        .call_fn_with_borrowed_scope::<()>(
+            &mut scope,
+            &ast,
+            "run",
+            (),
+            [BorrowedScopeEntry::opaque("host_state", &mut host_state)],
+        )
+        .unwrap();
+
+    // ((20 + 1) * 2) + 1 = 43
+    assert_eq!(host_state.value, 43);
+}
+
+#[test]
+fn test_register_borrow_fn_missing_or_inactive_binding_errors() {
+    struct NonCloneState {
+        value: INT,
+    }
+
+    let mut engine = Engine::new();
+    let mut scope = Scope::new();
+
+    engine.register_borrow_fn("set_state", [TypeId::of::<rhai::ImmutableString>()], |ctx, args| {
+        let name = args[0]
+            .clone()
+            .into_immutable_string()
+            .map_err(|typ| {
+                rhai::EvalAltResult::ErrorMismatchDataType(
+                    "string".into(),
+                    typ.into(),
+                    rhai::Position::NONE,
+                )
+            })?;
+
+        ctx.with_borrowed_mut::<NonCloneState, _>(name.as_str(), |state| state.value = 99)?;
+        Ok(())
+    });
+
+    let ast = engine
+        .compile(
+            r#"
+                fn run(name) {
+                    set_state(name);
+                }
+            "#,
+        )
+        .unwrap();
+
+    // Inactive borrowed scope.
+    let err = engine
+        .call_fn::<()>(&mut scope, &ast, "run", ("host_state",))
+        .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("borrowed bindings are unavailable outside call_fn_with_borrowed_scope"));
+
+    // Active borrowed scope but missing binding.
+    let mut host_state = NonCloneState { value: 20 };
+    let err = engine
+        .call_fn_with_borrowed_scope::<()>(
+            &mut scope,
+            &ast,
+            "run",
+            ("unknown",),
+            [BorrowedScopeEntry::opaque("host_state", &mut host_state)],
+        )
+        .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("borrowed binding 'unknown' is not found"));
 }

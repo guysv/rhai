@@ -70,6 +70,8 @@ pub struct GlobalRuntimeState {
     pub constants: Option<SharedGlobalConstants>,
     /// Custom state that can be used by the external host.
     pub tag: Dynamic,
+    /// Active borrowed bindings in the current call scope (if any).
+    pub(crate) active_borrowed_scope: Option<crate::Shared<crate::Locked<crate::func::native::ActiveBorrowedBindings>>>,
     /// Debugging interface.
     #[cfg(feature = "debugging")]
     pub(crate) debugger: Option<Box<super::Debugger>>,
@@ -103,6 +105,7 @@ impl Engine {
             constants: None,
 
             tag: self.default_tag().clone(),
+            active_borrowed_scope: None,
 
             #[cfg(feature = "debugging")]
             debugger: self.debugger_interface.as_ref().map(|x| {
@@ -339,6 +342,13 @@ impl fmt::Debug for GlobalRuntimeState {
         f.field("constants", &self.constants);
 
         f.field("tag", &self.tag);
+        f.field(
+            "active_borrowed_scope",
+            &self
+                .active_borrowed_scope
+                .as_ref()
+                .and_then(|scope| crate::func::locked_read(scope).map(|s| s.len())),
+        );
 
         #[cfg(feature = "debugging")]
         f.field("debugger", &self.debugger);

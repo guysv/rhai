@@ -3,7 +3,10 @@
 #![allow(non_snake_case)]
 
 use crate::types::dynamic::Variant;
-use crate::Dynamic;
+use crate::{Dynamic, ImmutableString};
+use std::any::Any;
+use std::marker::PhantomData;
+use std::ptr::NonNull;
 #[cfg(feature = "no_std")]
 use std::prelude::v1::*;
 
@@ -57,6 +60,121 @@ pub trait FuncArgs {
     /// # }
     /// ```
     fn parse<ARGS: Extend<Dynamic>>(self, args: &mut ARGS);
+}
+
+/// A borrowed scope binding for [`Engine::call_fn_with_borrowed_scope`][crate::Engine::call_fn_with_borrowed_scope].
+#[derive(Debug)]
+pub struct BorrowedScopeEntry<'a> {
+    /// The binding name.
+    pub name: ImmutableString,
+    /// Borrowed binding value.
+    pub value: BorrowedScopeValue<'a>,
+}
+
+/// Value of a borrowed scope binding.
+#[derive(Debug)]
+pub enum BorrowedScopeValue<'a> {
+    /// Borrowed [`Dynamic`] value exposed as a script local.
+    Dynamic(&'a mut Dynamic),
+    /// Borrowed opaque Rust value exposed only to `register_borrow_fn` handlers.
+    Opaque(BorrowedOpaquePointer<'a>),
+}
+
+/// Opaque borrowed pointer to any Rust value.
+#[derive(Debug)]
+pub struct BorrowedOpaquePointer<'a> {
+    pub(crate) ptr: NonNull<dyn Any>,
+    _marker: PhantomData<&'a mut dyn Any>,
+}
+
+impl<'a> BorrowedOpaquePointer<'a> {
+    /// Create an opaque pointer from a mutable Rust value.
+    #[inline(always)]
+    #[must_use]
+    pub fn new<T: Any>(value: &'a mut T) -> Self {
+        Self {
+            ptr: NonNull::from(value as &mut dyn Any),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a> BorrowedScopeEntry<'a> {
+    /// Create a borrowed binding from a [`Dynamic`] value.
+    #[inline(always)]
+    #[must_use]
+    pub fn dynamic(name: impl Into<ImmutableString>, value: &'a mut Dynamic) -> Self {
+        Self {
+            name: name.into(),
+            value: BorrowedScopeValue::Dynamic(value),
+        }
+    }
+    /// Create a borrowed binding from an opaque Rust value.
+    #[inline(always)]
+    #[must_use]
+    pub fn opaque<T: Any>(name: impl Into<ImmutableString>, value: &'a mut T) -> Self {
+        Self {
+            name: name.into(),
+            value: BorrowedScopeValue::Opaque(BorrowedOpaquePointer::new(value)),
+        }
+    }
+}
+
+/// Trait that parses borrowed scope bindings for a function call.
+///
+/// Any data type can implement this trait in order to pass borrowed scope bindings to
+/// [`Engine::call_fn_with_borrowed_scope`][crate::Engine::call_fn_with_borrowed_scope].
+pub trait BorrowedFuncArgs<'a> {
+    /// Parse borrowed bindings into a container.
+    fn parse<ARGS: Extend<BorrowedScopeEntry<'a>>>(self, args: &mut ARGS);
+}
+
+impl<'a> BorrowedFuncArgs<'a> for () {
+    #[inline(always)]
+    fn parse<ARGS: Extend<BorrowedScopeEntry<'a>>>(self, _: &mut ARGS) {}
+}
+
+impl<'a, N: Into<ImmutableString>> BorrowedFuncArgs<'a> for (N, &'a mut Dynamic) {
+    #[inline]
+    fn parse<ARGS: Extend<BorrowedScopeEntry<'a>>>(self, args: &mut ARGS) {
+        let (name, value) = self;
+        args.extend(Some(BorrowedScopeEntry::dynamic(name, value)));
+    }
+}
+
+impl<'a, N: Into<ImmutableString>> BorrowedFuncArgs<'a> for Vec<(N, &'a mut Dynamic)> {
+    #[inline]
+    fn parse<ARGS: Extend<BorrowedScopeEntry<'a>>>(self, args: &mut ARGS) {
+        args.extend(
+            self.into_iter()
+                .map(|(name, value)| BorrowedScopeEntry::dynamic(name, value)),
+        );
+    }
+}
+
+impl<'a, N: Into<ImmutableString>, const LEN: usize> BorrowedFuncArgs<'a>
+    for [(N, &'a mut Dynamic); LEN]
+{
+    #[inline]
+    fn parse<ARGS: Extend<BorrowedScopeEntry<'a>>>(self, args: &mut ARGS) {
+        args.extend(IntoIterator::into_iter(self).map(|(name, value)| {
+            BorrowedScopeEntry::dynamic(name, value)
+        }));
+    }
+}
+
+impl<'a> BorrowedFuncArgs<'a> for Vec<BorrowedScopeEntry<'a>> {
+    #[inline]
+    fn parse<ARGS: Extend<BorrowedScopeEntry<'a>>>(self, args: &mut ARGS) {
+        args.extend(self);
+    }
+}
+
+impl<'a, const LEN: usize> BorrowedFuncArgs<'a> for [BorrowedScopeEntry<'a>; LEN] {
+    #[inline]
+    fn parse<ARGS: Extend<BorrowedScopeEntry<'a>>>(self, args: &mut ARGS) {
+        args.extend(IntoIterator::into_iter(self));
+    }
 }
 
 impl<T: Variant + Clone> FuncArgs for Vec<T> {

@@ -156,7 +156,18 @@ impl Engine {
 
         let val = scope.get_mut_by_index(index);
 
-        val.try_into()
+        if let Some(binding_name) = val.expired_borrowed_binding_name() {
+            return Err(ERR::ErrorRuntime(
+                format!("borrowed scope binding '{binding_name}' is no longer valid").into(),
+                expr.position(),
+            )
+            .into());
+        }
+
+        match val.try_into() {
+            Ok(target) => Ok(target),
+            Err(err) => Err(err.fill_position(expr.position())),
+        }
     }
     /// Search for a variable within the scope or within imports,
     /// depending on whether the variable name is namespace-qualified.

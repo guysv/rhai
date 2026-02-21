@@ -650,7 +650,7 @@ impl Engine {
                     let (first_arg, args) = args.split_first_mut().unwrap();
                     let this_ptr = Some(&mut **first_arg);
                     self.call_script_fn(
-                        global, caches, scope, this_ptr, env, fn_def, args, true, pos,
+                        global, caches, scope, this_ptr, env, fn_def, args, None, true, pos,
                     )
                 } else {
                     // Normal call of script function
@@ -665,7 +665,9 @@ impl Engine {
 
                     defer! { args = (args) if swap => move |a| backup.restore_first_arg(a) }
 
-                    self.call_script_fn(global, caches, scope, None, env, fn_def, args, true, pos)
+                    self.call_script_fn(
+                        global, caches, scope, None, env, fn_def, args, None, true, pos,
+                    )
                 }
                 .map(|r| (r, false));
             }
@@ -750,7 +752,7 @@ impl Engine {
                         defer! { let orig_level = global.level; global.level += 1 }
 
                         self.call_script_fn(
-                            global, caches, scope, None, env, fn_def, &mut args, true, pos,
+                            global, caches, scope, None, env, fn_def, &mut args, None, true, pos,
                         )
                         .map(|v| (v, false))
                     }
@@ -842,7 +844,7 @@ impl Engine {
                         defer! { let orig_level = global.level; global.level += 1 }
 
                         self.call_script_fn(
-                            global, caches, scope, this_ptr, env, &fn_def, args, true, pos,
+                            global, caches, scope, this_ptr, env, &fn_def, args, None, true, pos,
                         )
                         .map(|v| (v, false))
                     }
@@ -1010,7 +1012,7 @@ impl Engine {
                         defer! { let orig_level = global.level; global.level += 1 }
 
                         self.call_script_fn(
-                            global, caches, scope, this_ptr, env, &fn_def, args, true, pos,
+                            global, caches, scope, this_ptr, env, &fn_def, args, None, true, pos,
                         )
                         .map(|v| (v, false))
                     }
@@ -1132,7 +1134,7 @@ impl Engine {
                         defer! { let orig_level = global.level; global.level += 1 }
 
                         return self.call_script_fn(
-                            global, caches, scope, None, env, &fn_def, args, true, pos,
+                            global, caches, scope, None, env, &fn_def, args, None, true, pos,
                         );
                     }
                     // Native function - short-circuit
@@ -1612,7 +1614,9 @@ impl Engine {
                 let orig_source = mem::replace(&mut global.source, module.id_raw().cloned());
                 defer! { global => move |g| g.source = orig_source }
 
-                self.call_script_fn(global, caches, scope, None, env, fn_def, args, true, pos)
+                self.call_script_fn(
+                    global, caches, scope, None, env, fn_def, args, None, true, pos,
+                )
             }
 
             Some(f) if !f.is_pure() && args[0].is_read_only() => {

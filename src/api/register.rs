@@ -4,7 +4,8 @@ use crate::func::{FnCallArgs, RhaiFunc, RhaiNativeFunc, SendSync};
 use crate::module::FuncRegistration;
 use crate::types::dynamic::Variant;
 use crate::{
-    Dynamic, Engine, Identifier, Module, NativeCallContext, RhaiResultOf, Shared, SharedModule,
+    BorrowCallContext, Dynamic, Engine, Identifier, Module, NativeCallContext, RhaiResultOf,
+    Shared, SharedModule,
 };
 use std::any::{type_name, TypeId};
 #[cfg(feature = "no_std")]
@@ -129,6 +130,20 @@ impl Engine {
             );
 
         self
+    }
+    /// Register a borrow-aware function with the [`Engine`].
+    ///
+    /// This API is intended for [`Engine::call_fn_with_borrowed_scope`][crate::Engine::call_fn_with_borrowed_scope]
+    /// where borrowed bindings are provided by name and can be accessed inside `func` via
+    /// [`BorrowCallContext::with_borrowed_mut`][crate::BorrowCallContext::with_borrowed_mut].
+    #[inline(always)]
+    pub fn register_borrow_fn<T: Variant + Clone>(
+        &mut self,
+        name: impl AsRef<str> + Into<Identifier>,
+        arg_types: impl AsRef<[TypeId]>,
+        func: impl Fn(BorrowCallContext, &mut FnCallArgs) -> RhaiResultOf<T> + SendSync + 'static,
+    ) -> &mut Self {
+        self.register_raw_fn(name, arg_types, move |ctx, args| func(ctx.into(), args))
     }
     /// Register a custom type for use with the [`Engine`].
     /// The type must implement [`Clone`].

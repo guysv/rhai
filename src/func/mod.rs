@@ -18,7 +18,9 @@ pub use call::ensure_no_data_race;
 #[cfg(not(feature = "no_function"))]
 pub use call::is_anonymous_fn;
 pub use call::FnCallArgs;
-pub use func_args::FuncArgs;
+pub use func_args::{
+    BorrowedFuncArgs, BorrowedOpaquePointer, BorrowedScopeEntry, BorrowedScopeValue, FuncArgs,
+};
 #[cfg(not(feature = "no_function"))]
 pub use func_trait::Func;
 pub use function::RhaiFunc;
@@ -32,6 +34,6 @@ pub use native::NativeCallContextStore;
 #[allow(unused_imports)]
 pub use native::{
     locked_read, locked_write, shared_get_mut, shared_make_mut, shared_take, shared_take_or_clone,
-    FnIterator, Locked, NativeCallContext, SendSync, Shared,
+    BorrowCallContext, FnIterator, Locked, NativeCallContext, SendSync, Shared,
 };
 pub use register::RhaiNativeFunc;

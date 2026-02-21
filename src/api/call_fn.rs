@@ -4,7 +4,8 @@
 use crate::eval::{Caches, GlobalRuntimeState};
 use crate::types::dynamic::Variant;
 use crate::{
-    Dynamic, Engine, FnArgsVec, FuncArgs, Position, RhaiResult, RhaiResultOf, Scope, AST, ERR,
+    BorrowedFuncArgs, BorrowedScopeEntry, Dynamic, Engine, FnArgsVec, FuncArgs, Position,
+    RhaiResult, RhaiResultOf, Scope, AST, ERR,
 };
 #[cfg(feature = "no_std")]
 use std::prelude::v1::*;
@@ -132,6 +133,32 @@ impl Engine {
     ) -> RhaiResultOf<T> {
         self.call_fn_with_options(<_>::default(), scope, ast, fn_name, args)
     }
+    /// Call a script function defined in an [`AST`] with multiple arguments and borrowed scope bindings.
+    ///
+    /// Borrowed scope bindings are injected as local variables into the called function's scope.
+    /// They may be read and mutated during the call, and final values are written back when the
+    /// call finishes.
+    ///
+    /// If a borrowed binding is captured and used after this call returns, Rhai returns a
+    /// run-time error because the binding has expired.
+    #[inline(always)]
+    pub fn call_fn_with_borrowed_scope<'a, T: Variant + Clone>(
+        &self,
+        scope: &mut Scope,
+        ast: &AST,
+        fn_name: impl AsRef<str>,
+        args: impl FuncArgs,
+        borrowed_scope: impl BorrowedFuncArgs<'a>,
+    ) -> RhaiResultOf<T> {
+        self.call_fn_with_options_and_borrowed_scope(
+            <_>::default(),
+            scope,
+            ast,
+            fn_name,
+            args,
+            borrowed_scope,
+        )
+    }
     /// Call a script function defined in an [`AST`] with multiple [`Dynamic`] arguments.
     /// Options are provided via the [`CallFnOptions`] type.
     ///
@@ -191,6 +218,47 @@ impl Engine {
             ast,
             fn_name.as_ref(),
             arg_values.as_mut(),
+            None,
+            &mut self.new_global_runtime_state(),
+            &mut Caches::new(),
+        )
+        .and_then(|result| {
+            result.try_cast_result().map_err(|r| {
+                let result_type = self.map_type_name(r.type_name());
+                let cast_type = match type_name::<T>() {
+                    typ if typ.contains("::") => self.map_type_name(typ),
+                    typ => typ,
+                };
+                ERR::ErrorMismatchOutputType(cast_type.into(), result_type.into(), Position::NONE)
+                    .into()
+            })
+        })
+    }
+    /// Call a script function defined in an [`AST`] with multiple [`Dynamic`] arguments and
+    /// borrowed scope bindings. Options are provided via the [`CallFnOptions`] type.
+    #[inline(always)]
+    pub fn call_fn_with_options_and_borrowed_scope<'a, T: Variant + Clone>(
+        &self,
+        options: CallFnOptions,
+        scope: &mut Scope,
+        ast: &AST,
+        fn_name: impl AsRef<str>,
+        args: impl FuncArgs,
+        borrowed_scope: impl BorrowedFuncArgs<'a>,
+    ) -> RhaiResultOf<T> {
+        let mut arg_values = FnArgsVec::new_const();
+        args.parse(&mut arg_values);
+
+        let mut borrowed_bindings = FnArgsVec::new_const();
+        borrowed_scope.parse(&mut borrowed_bindings);
+
+        self._call_fn(
+            options,
+            scope,
+            ast,
+            fn_name.as_ref(),
+            arg_values.as_mut(),
+            Some(borrowed_bindings.as_mut()),
             &mut self.new_global_runtime_state(),
             &mut Caches::new(),
         )
@@ -223,6 +291,7 @@ impl Engine {
         ast: &AST,
         name: &str,
         arg_values: &mut [Dynamic],
+        mut borrowed_scope: Option<&mut [BorrowedScopeEntry<'_>]>,
         global: &mut GlobalRuntimeState,
         caches: &mut Caches,
     ) -> RhaiResult {
@@ -281,6 +350,7 @@ impl Engine {
                     None,
                     fn_def,
                     args,
+                    borrowed_scope.as_deref_mut(),
                     rewind_scope,
                     Position::NONE,
                 )
@@ -291,6 +361,15 @@ impl Engine {
             } else if !in_all_namespaces {
                 Err(ERR::ErrorFunctionNotFound(name.into(), Position::NONE).into())
             } else {
+                if borrowed_scope.as_ref().map_or(false, |bindings| !bindings.is_empty()) {
+                    return Err(ERR::ErrorRuntime(
+                        "borrowed scope bindings can only be used when calling a scripted function"
+                            .into(),
+                        Position::NONE,
+                    )
+                    .into());
+                }
+
                 let has_this = this_ptr.as_deref_mut().map_or(false, |this_ptr| {
                     args.insert(0, this_ptr);
                     true

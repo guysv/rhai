@@ -50,6 +50,10 @@ pub type Tag = i16;
 /// Default tag value for [`Dynamic`].
 const DEFAULT_TAG_VALUE: Tag = 0;
 
+/// Marker value for an expired borrowed scope binding.
+#[derive(Debug, Clone)]
+pub(crate) struct ExpiredBorrowedBinding(pub ImmutableString);
+
 /// Dynamic type containing any value.
 #[must_use]
 pub struct Dynamic(pub(crate) Union);
@@ -872,6 +876,29 @@ impl Dynamic {
     pub const TRUE: Self = Self::from_bool(true);
     /// A [`Dynamic`] containing a [`false`].
     pub const FALSE: Self = Self::from_bool(false);
+
+    /// Create a marker value for an expired borrowed scope binding.
+    #[inline(always)]
+    pub(crate) fn make_expired_borrowed_binding(name: impl Into<ImmutableString>) -> Self {
+        Self::from(ExpiredBorrowedBinding(name.into()))
+    }
+
+    /// Get the binding name if this value is an expired borrowed scope binding marker.
+    #[inline]
+    pub(crate) fn expired_borrowed_binding_name(&self) -> Option<ImmutableString> {
+        if let Some(marker) = self.downcast_ref::<ExpiredBorrowedBinding>() {
+            return Some(marker.0.clone());
+        }
+
+        #[cfg(not(feature = "no_closure"))]
+        if let Some(value) = self.read_lock::<Dynamic>() {
+            if let Some(marker) = value.downcast_ref::<ExpiredBorrowedBinding>() {
+                return Some(marker.0.clone());
+            }
+        }
+
+        None
+    }
     /// A [`Dynamic`] containing the integer zero.
     pub const ZERO: Self = Self::from_int(0);
     /// A [`Dynamic`] containing the integer 1.

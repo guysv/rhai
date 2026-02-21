@@ -356,6 +356,7 @@ impl FnPtr {
                     None,
                     fn_def,
                     args,
+                    None,
                     true,
                     context.call_position(),
                 );

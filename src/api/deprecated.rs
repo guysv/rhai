@@ -182,6 +182,7 @@ impl Engine {
             ast,
             name.as_ref(),
             arg_values.as_mut(),
+            None,
             &mut self.new_global_runtime_state(),
             &mut crate::eval::Caches::new(),
         )

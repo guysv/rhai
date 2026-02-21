@@ -8,9 +8,12 @@ use crate::tokenizer::{is_valid_function_name, Token, TokenizeState};
 use crate::types::dynamic::Variant;
 use crate::{
     calc_fn_hash, expose_under_internals, Dynamic, Engine, EvalContext, FnArgsVec, FuncArgs,
-    Position, RhaiResult, RhaiResultOf, StaticVec, VarDefInfo, ERR,
+    ImmutableString, Position, RhaiResult, RhaiResultOf, StaticVec, VarDefInfo, ERR,
 };
+use std::any::Any;
 use std::any::type_name;
+use std::collections::BTreeMap;
+use std::ptr::NonNull;
 #[cfg(feature = "no_std")]
 use std::prelude::v1::*;
 
@@ -84,6 +87,22 @@ pub struct NativeCallContext<'a> {
     pos: Position,
 }
 
+/// Active borrowed value for borrow-aware callbacks.
+#[derive(Debug)]
+pub(crate) enum ActiveBorrowedValue {
+    /// Borrowed value represented by a shared [`Dynamic`].
+    Dynamic(Dynamic),
+    /// Borrowed opaque Rust value.
+    Opaque(NonNull<dyn Any>),
+}
+
+/// Active borrowed bindings map.
+pub(crate) type ActiveBorrowedBindings = BTreeMap<ImmutableString, ActiveBorrowedValue>;
+
+/// Context of a borrow-aware native Rust function call.
+#[derive(Debug)]
+pub struct BorrowCallContext<'a>(NativeCallContext<'a>);
+
 /// _(internals)_ Context of a native Rust function call, intended for persistence.
 /// Exported under the `internals` feature only.
 ///
@@ -146,6 +165,13 @@ impl<'a>
             global: value.3,
             pos: value.4,
         }
+    }
+}
+
+impl<'a> From<NativeCallContext<'a>> for BorrowCallContext<'a> {
+    #[inline(always)]
+    fn from(value: NativeCallContext<'a>) -> Self {
+        Self(value)
     }
 }
 
@@ -483,6 +509,93 @@ impl<'a> NativeCallContext<'a> {
                 self.call_position(),
             )
             .map(|(r, ..)| r)
+    }
+}
+
+impl BorrowCallContext<'_> {
+    /// The current [`Engine`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn engine(&self) -> &Engine {
+        self.0.engine()
+    }
+    /// Name of the function called.
+    #[inline(always)]
+    #[must_use]
+    pub const fn fn_name(&self) -> &str {
+        self.0.fn_name()
+    }
+    /// [Position] of the function call in the caller.
+    #[inline(always)]
+    #[must_use]
+    pub const fn call_position(&self) -> Position {
+        self.0.call_position()
+    }
+    /// Access a borrowed binding by name as a mutable Rust value.
+    ///
+    /// The reference is only valid inside this callback.
+    pub fn with_borrowed_mut<T: Any, R>(
+        &self,
+        name: &str,
+        mapper: impl FnOnce(&mut T) -> R,
+    ) -> RhaiResultOf<R> {
+        let Some(bindings) = self.0.global.active_borrowed_scope.as_ref() else {
+            return Err(ERR::ErrorRuntime(
+                "borrowed bindings are unavailable outside call_fn_with_borrowed_scope".into(),
+                self.call_position(),
+            )
+            .into());
+        };
+
+        let Some(mut bindings_guard) = locked_write(bindings) else {
+            return Err(ERR::ErrorDataRace(name.into(), self.call_position()).into());
+        };
+
+        let Some(entry) = bindings_guard.get_mut(name) else {
+            return Err(ERR::ErrorRuntime(
+                format!("borrowed binding '{name}' is not found").into(),
+                self.call_position(),
+            )
+            .into());
+        };
+
+        match entry {
+            ActiveBorrowedValue::Dynamic(value) => {
+                let Some(guard) = value.write_lock::<Dynamic>() else {
+                    return Err(ERR::ErrorDataRace(name.into(), self.call_position()).into());
+                };
+
+                if guard.expired_borrowed_binding_name().is_some() {
+                    return Err(ERR::ErrorRuntime(
+                        format!("borrowed binding '{name}' is no longer valid").into(),
+                        self.call_position(),
+                    )
+                    .into());
+                }
+
+                let _ = guard;
+                Err(ERR::ErrorRuntime(
+                    format!(
+                        "borrowed binding '{name}' is a Dynamic binding; use register_fn for value-based access"
+                    )
+                    .into(),
+                    self.call_position(),
+                )
+                .into())
+            }
+            ActiveBorrowedValue::Opaque(ptr) => {
+                let value = unsafe { ptr.as_mut() };
+                let Some(value) = value.downcast_mut::<T>() else {
+                    return Err(ERR::ErrorMismatchDataType(
+                        self.engine().map_type_name(type_name::<T>()).into(),
+                        std::any::type_name_of_val(value).into(),
+                        self.call_position(),
+                    )
+                    .into());
+                };
+                Ok(mapper(value))
+            }
+        }
     }
 }
 

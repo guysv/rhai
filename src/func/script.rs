@@ -4,9 +4,12 @@
 use super::call::FnCallArgs;
 use crate::ast::{EncapsulatedEnviron, ScriptFuncDef};
 use crate::eval::{Caches, GlobalRuntimeState};
-use crate::{Dynamic, Engine, Position, RhaiResult, Scope, ERR};
+use crate::{
+    BorrowedScopeEntry, BorrowedScopeValue, Dynamic, Engine, Position, RhaiResult, Scope, ERR,
+};
 #[cfg(feature = "no_std")]
 use std::prelude::v1::*;
+use std::mem;
 
 impl Engine {
     /// # Main Entry-Point
@@ -30,6 +33,7 @@ impl Engine {
         _env: Option<&EncapsulatedEnviron>,
         fn_def: &ScriptFuncDef,
         args: &mut FnCallArgs,
+        mut borrowed_scope: Option<&mut [BorrowedScopeEntry<'_>]>,
         rewind_scope: bool,
         pos: Position,
     ) -> RhaiResult {
@@ -63,13 +67,94 @@ impl Engine {
             .as_ref()
             .map_or(0, |dbg| dbg.call_stack().len());
 
+        #[cfg(not(feature = "no_closure"))]
+        let borrowed_scope_count = borrowed_scope.as_ref().map_or(0, |bindings| {
+            bindings
+                .iter()
+                .filter(|binding| matches!(binding.value, BorrowedScopeValue::Dynamic(..)))
+                .count()
+        });
+        #[cfg(feature = "no_closure")]
+        let borrowed_scope_count = 0;
+
         // Guard against too many variables
         #[cfg(not(feature = "unchecked"))]
-        if scope.len() + fn_def.params.len() > self.max_variables() {
+        if scope.len() + fn_def.params.len() + borrowed_scope_count > self.max_variables() {
             return Err(ERR::ErrorTooManyVariables(pos).into());
         }
 
-        // Put arguments into scope as variables
+        #[cfg(not(feature = "no_closure"))]
+        let mut borrowed_scope_values = crate::FnArgsVec::new_const();
+        #[cfg(not(feature = "no_closure"))]
+        let mut borrowed_scope_map = crate::func::native::ActiveBorrowedBindings::new();
+        let mut orig_borrowed_scope = None;
+
+        #[cfg(feature = "no_closure")]
+        if borrowed_scope.as_ref().map_or(false, |bindings| !bindings.is_empty()) {
+            return Err(ERR::ErrorRuntime(
+                "borrowed scope bindings require the `no_closure` feature to be disabled".into(),
+                pos,
+            )
+            .into());
+        }
+
+        #[cfg(not(feature = "no_closure"))]
+        if let Some(bindings) = borrowed_scope.as_deref_mut() {
+            for binding in bindings.iter() {
+                if matches!(binding.value, BorrowedScopeValue::Dynamic(..))
+                    && (fn_def.params.iter().any(|param| param == &binding.name)
+                        || scope.contains(binding.name.as_str()))
+                {
+                    return Err(ERR::ErrorRuntime(
+                        format!(
+                            "borrowed scope binding '{}' conflicts with an existing variable",
+                            binding.name
+                        )
+                        .into(),
+                        pos,
+                    )
+                    .into());
+                }
+            }
+
+            borrowed_scope_values.reserve(bindings.len());
+
+            for binding in bindings.iter_mut() {
+                match &mut binding.value {
+                    BorrowedScopeValue::Dynamic(value) => {
+                        let value = mem::take(*value).into_shared();
+                        scope.push_dynamic(binding.name.clone(), value.clone());
+                        borrowed_scope_map.insert(
+                            binding.name.clone(),
+                            crate::func::native::ActiveBorrowedValue::Dynamic(value.clone()),
+                        );
+                        borrowed_scope_values.push(value);
+                    }
+                    BorrowedScopeValue::Opaque(ptr) => {
+                        borrowed_scope_map.insert(
+                            binding.name.clone(),
+                            crate::func::native::ActiveBorrowedValue::Opaque(ptr.ptr),
+                        );
+                    }
+                }
+            }
+
+            if !borrowed_scope_map.is_empty() {
+                let map = crate::Shared::new(crate::Locked::new(borrowed_scope_map));
+                orig_borrowed_scope = Some(std::mem::replace(
+                    &mut global.active_borrowed_scope,
+                    Some(map),
+                ));
+            }
+        }
+
+        defer! {
+            global if orig_borrowed_scope.is_some() =>
+            move |g| g.active_borrowed_scope = orig_borrowed_scope.unwrap()
+        }
+
+        // Put arguments into scope as variables.
+        // Keep function parameters as the newest entries so pre-computed variable offsets remain valid.
         scope.extend(fn_def.params.iter().cloned().zip(args.iter_mut().map(|v| {
             // Actually consume the arguments instead of cloning them
             v.take()
@@ -186,11 +271,37 @@ impl Engine {
         }
 
         // Remove all local variables and imported modules
+        #[cfg(not(feature = "no_closure"))]
+        if let Some(bindings) = borrowed_scope.as_deref_mut() {
+            let mut index = 0;
+
+            for binding in bindings.iter_mut() {
+                if let BorrowedScopeValue::Dynamic(value) = &mut binding.value {
+                    let shared_value = &mut borrowed_scope_values[index];
+                    index += 1;
+
+                    let new_value = shared_value
+                        .read_lock::<Dynamic>()
+                        .map_or_else(|| shared_value.flatten_clone(), |v| v.flatten_clone());
+                    **value = new_value;
+
+                    if let Some(mut guard) = shared_value.write_lock::<Dynamic>() {
+                        *guard = Dynamic::make_expired_borrowed_binding(binding.name.clone());
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(feature = "no_closure"))]
+        let num_bound_values = args.len() + borrowed_scope_values.len();
+        #[cfg(feature = "no_closure")]
+        let num_bound_values = args.len();
+
         if rewind_scope {
             scope.rewind(orig_scope_len);
-        } else if !args.is_empty() {
-            // Remove arguments only, leaving new variables in the scope
-            scope.remove_range(orig_scope_len, args.len());
+        } else if num_bound_values > 0 {
+            // Remove arguments and borrowed bindings only, leaving new variables in the scope
+            scope.remove_range(orig_scope_len, num_bound_values);
         }
         global.lib.truncate(orig_lib_len);
         #[cfg(not(feature = "no_module"))]
